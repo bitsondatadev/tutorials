@@ -44,7 +44,7 @@ provider "helm" {
 }
 
 resource "kind_cluster" "k8s_cluster" {
-  name = "k8s-cluster"
+  name = "kind-cluster"
   kubeconfig_path = pathexpand(var.kind_cluster_config_path)
   wait_for_ready  = true
 
@@ -55,60 +55,24 @@ resource "kind_cluster" "k8s_cluster" {
     node {
       role = "control-plane"
 
-      kubeadm_config_patches = [
-        <<EOT
-        kind: InitConfiguration
-        nodeRegistration:  
-            kubeletExtraArgs:    
-              node-labels: "ingress-ready=true"
-        EOT
-      ]
-       extra_port_mappings {
-        container_port = 80
-        host_port      = 80 
+      extra_port_mappings {
+        container_port = 30000
+        host_port      = 8080
       }
       extra_port_mappings {
-        container_port = 443
-        host_port      = 443
+        container_port = 30001
+        host_port      = 9000
+      }
+      extra_port_mappings {
+        container_port = 30002
+        host_port      = 9001
+      }
+      extra_port_mappings {
+        container_port = 30003
+        host_port      = 5432
       }
     }
-
-    node {
-      role = "worker"
-    }
   }
-}
-
-resource "helm_release" "ingress_controller" {
-  name       = "ingress-controller"
-  repository = "https://kubernetes.github.io/ingress-nginx"
-  chart      = "ingress-nginx"
-  version    = "4.0.1"
-
-  namespace        = "ingress-controller"
-  create_namespace = true
-
-  values = [file("nginx-ingress-values.yaml")]
-
-  depends_on = [kind_cluster.k8s_cluster]
-}
-
-resource "null_resource" "wait_for_ingress" {
-  triggers = {
-    key = uuid()
-  }
-
-  provisioner "local-exec" {
-    command = <<EOF
-      printf "\nWaiting for the ingress controller...\n"
-      kubectl wait --namespace ${helm_release.ingress_controller.namespace} \
-        --for=condition=ready pod \
-        --selector=app.kubernetes.io/component=controller \
-        --timeout=90s
-    EOF
-  }
-
-  depends_on = [helm_release.ingress_controller]
 }
 
 resource "helm_release" "trino_cluster" {
@@ -119,8 +83,7 @@ resource "helm_release" "trino_cluster" {
 
   values = [file("trino-values.yaml")]
 
-  depends_on = [null_resource.wait_for_ingress]
-
+  depends_on = [kind_cluster.k8s_cluster]
 }
 
 resource "helm_release" "minio_cluster" {
@@ -131,7 +94,7 @@ resource "helm_release" "minio_cluster" {
 
   values = [file("minio-values.yaml")]
 
-  depends_on = [null_resource.wait_for_ingress]
+  depends_on = [kind_cluster.k8s_cluster]
 
   # https://artifacthub.io/packages/helm/minio-official/minio#create-buckets-after-install
   set {
@@ -159,156 +122,103 @@ resource "helm_release" "postgresql" {
 
   values = [file("postgresql-values.yaml")]
 
-  depends_on = [null_resource.wait_for_ingress]
+  depends_on = [kind_cluster.k8s_cluster]
 }
 
-resource "kubernetes_ingress_v1" "trino_ingress" {
-  metadata {
-    name = "trino-ingress"
-    namespace = "ingress-controller"
-    annotations = {
-      "nginx.ingress.kubernetes.io/rewrite-target" = "/$1"
-    }
+resource "null_resource" "wait_for_services" {
+  triggers = {
+    key = uuid()
   }
 
-  spec {
-    ingress_class_name = "nginx"
-    rule {
-      http {
-        path {
-          path = "/trino(?:/|$)(.*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "trino-cluster"
-              port {
-                number = 8080
-              }
-            }
-          }
-        }
-        path {
-          path = "/(ui(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "trino-cluster"
-              port {
-                number = 8080
-              }
-            }
-          }
-        }
-        path {
-          path = "/(v1(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "trino-cluster"
-              port {
-                number = 8080
-              }
-            }
-          }
-        }
-        path {
-          path = "/minio(?:/|$)(.*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(api(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(login(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(styles(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(static(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(images(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(ws(?:/|$).*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "minio-cluster-console"
-              port {
-                number = 9001
-              }
-            }
-          }
-        }
-        path {
-          path = "/(postgresql?:/|$)(.*)"
-          path_type = "Prefix"
-          backend {
-            service {
-              name = "postgresql"
-              port {
-                number = 5432
-              }
-            }
-          }
-        }
-      }
-    }
+  provisioner "local-exec" {
+    command = <<EOF
+      printf "\nWaiting for Services...\n"
+      kubectl wait --namespace ${helm_release.trino_cluster.namespace} \
+        --for condition=Ready \
+        --timeout=90s \
+        pods --all
+      kubectl rollout status -w deployments
+    EOF
   }
+
   depends_on = [helm_release.trino_cluster, helm_release.minio_cluster, helm_release.postgresql]
+}
+
+resource "kubernetes_service" "add_node_port_trino" {
+  metadata {
+    name = "trino-cluster-np"
+  }
+  spec {
+    port {
+      port        = 8080
+      node_port = 30000
+    }
+    selector = {
+      app: "trino"
+      release: "trino-cluster"
+    }
+
+    type = "NodePort"
+  }
+  depends_on = [null_resource.wait_for_services]
+}
+
+resource "kubernetes_service" "add_node_port_minio" {
+  metadata {
+    name = "minio-cluster-np"
+  }
+  spec {
+    port {
+      port        = 9000
+      node_port = 30001
+    }
+
+    selector = {
+      app: "minio"
+      release: "minio-cluster"
+    }
+
+    type = "NodePort"
+  }
+  depends_on = [null_resource.wait_for_services]
+}
+
+resource "kubernetes_service" "add_node_port_minio_console" {
+  metadata {
+    name = "minio-cluster-console-np"
+  }
+  spec {
+    port {
+      port        = 9001
+      node_port = 30002
+    }
+
+    selector = {
+      app: "minio"
+      release: "minio-cluster"
+    }
+
+    type = "NodePort"
+  }
+  depends_on = [null_resource.wait_for_services]
+}
+
+resource "kubernetes_service" "add_node_port_postgres" {
+  metadata {
+    name = "postgres-cluster-np"
+  }
+  spec {
+    port {
+      port        = 5432
+      node_port = 30003
+    }
+
+    selector = {
+      app: "postgresql"
+      release: "postgresql"
+    }
+
+    type = "NodePort"
+  }
+  depends_on = [null_resource.wait_for_services]
 }
